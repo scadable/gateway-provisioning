@@ -15,6 +15,11 @@ dependencies:
   # firmware. Cert + namespace come from NVS (written at flash time).
   crypto-a/libscadable: "^0.1.0"
 
+  # mDNS — captive-portal advertises setup.local on the SoftAP so
+  # users can browse to a friendly name instead of 192.168.4.1. As of
+  # IDF 5.1, mdns moved out of the core into the component manager.
+  espressif/mdns: "^1.2.0"
+
   # NOTE: espressif/wifi_provisioning is intentionally NOT a v1
   # dependency. We deliberately match its NVS layout (namespace
   # `wifi`, keys `ssid` + `password`) so that when Phase 2 swaps the
