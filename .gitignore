@@ -1,0 +1,15 @@
+# ESP-IDF build outputs
+esp/build/
+esp/sdkconfig
+esp/sdkconfig.old
+esp/sdkconfig.brand
+esp/managed_components/
+esp/dependencies.lock
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Linux phase-2 placeholder — nothing to ignore yet
