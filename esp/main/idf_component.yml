@@ -1,0 +1,24 @@
+# Component dependencies for the SCADABLE provisioning firmware.
+# SCADABLE 2026 · Apache-2.0
+#
+# IDF Component Manager pulls these on first build and caches them in
+# managed_components/. Pinned to compatible-version ranges so security
+# patches land without breaking us.
+
+dependencies:
+  idf:
+    version: ">=5.1"
+
+  # libscadable provides the managed MQTT + OTA + telemetry surface.
+  # The provisioning firmware uses it just to publish the one-shot
+  # "provisioned" status and let the OTA hook auto-pull the customer
+  # firmware. Cert + namespace come from NVS (written at flash time).
+  crypto-a/libscadable: "^0.1.0"
+
+  # NOTE: espressif/wifi_provisioning is intentionally NOT a v1
+  # dependency. We deliberately match its NVS layout (namespace
+  # `wifi`, keys `ssid` + `password`) so that when Phase 2 swaps the
+  # captive-portal UX for the BLE/SoftAP encrypted-channel flow, the
+  # already-provisioned chips keep working without a creds migration.
+  # Pulling in the upstream component for v1 would just add binary
+  # size for an API we don't call yet.

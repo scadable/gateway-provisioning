@@ -1,0 +1,58 @@
+# gateway-provisioning project Kconfig.
+# SCADABLE 2026 · Apache-2.0
+#
+# Surfaced under Component config → SCADABLE provisioning in menuconfig.
+# These are the white-label knobs — the only places the brand name and
+# cloud URL appear. Override at build time via menuconfig or by
+# appending a sdkconfig.brand fragment to SDKCONFIG_DEFAULTS.
+
+menu "SCADABLE provisioning"
+
+config SCADABLE_COMPANY_NAME
+    string "Company name (shown in AP SSID + setup page)"
+    default "SCADABLE"
+    help
+        Used as the brand string in:
+          - The SoftAP SSID (e.g. "SCADABLE-Setup-A4F3B2")
+          - The captive portal HTML page title and header
+          - The serial boot banner
+
+config SCADABLE_OTA_HEALTH_URL
+    string "Cloud health endpoint for connectivity check"
+    default "https://edge.scadable.com/health"
+    help
+        Probed once after WiFi connects. A 200 response means the
+        device has internet AND the SCADABLE control plane is
+        reachable, so we proceed into OTA-pull mode. Anything else
+        falls back to AP mode so the customer can fix the network.
+        White-label deployments point this at their own /health.
+
+config SCADABLE_AP_TIMEOUT_SECS
+    int "AP-mode timeout before reboot (seconds, 0 = disabled)"
+    default 0
+    help
+        If non-zero, AP mode auto-reboots after this many seconds with
+        no successful provisioning. Useful in factory-flashing
+        scenarios where you want the chip to power-cycle if nobody
+        pairs it within a fixed window. Default 0 = stay in AP mode
+        forever until provisioned.
+
+config SCADABLE_WIFI_CONNECT_TIMEOUT_SECS
+    int "WiFi connect timeout in boot decision (seconds)"
+    default 30
+    help
+        How long boot_decision waits for a saved-creds WiFi connect to
+        succeed before falling back to AP mode. 30s is the default
+        IDF backoff window; lower this if you want faster recovery
+        when the saved network is gone.
+
+config SCADABLE_RECOVERY_BUTTON_HOLD_SECS
+    int "GPIO0 hold time for NVS-wipe recovery (seconds)"
+    default 5
+    help
+        Holding the BOOT button low for this many seconds at boot
+        wipes the saved WiFi creds and reboots into AP mode. Lets a
+        customer reset a device that moved networks without
+        re-flashing.
+
+endmenu
