@@ -13,7 +13,12 @@ dependencies:
   # The provisioning firmware uses it just to publish the one-shot
   # "provisioned" status and let the OTA hook auto-pull the customer
   # firmware. Cert + namespace come from NVS (written at flash time).
-  crypto-a/libscadable: "^0.1.0"
+  #
+  # v0.2.0 switched broker verification from a per-device NVS ca_cert
+  # to the Mozilla root bundle compiled into the lib. The broker at
+  # io.scadable.com is now LE-issued, so chips trust it via the
+  # Mozilla bundle and the dashboard no longer writes ca_cert to NVS.
+  crypto-a/libscadable: "^0.2.0"
 
   # mDNS — captive-portal advertises setup.local on the SoftAP so
   # users can browse to a friendly name instead of 192.168.4.1. As of
