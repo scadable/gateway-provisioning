@@ -1,0 +1,33 @@
+# gateway-provisioning partition table.
+# SCADABLE 2026 · Apache-2.0
+#
+# Strategy: the *provisioning* firmware lives in `factory` permanently.
+# The customer's *real* firmware is OTA'd into ota_0 / ota_1. The
+# bootloader prefers OTA but falls back to factory whenever the active
+# OTA slot is invalid (bad image, rollback marker, etc.) — which gives
+# us the recovery-app pattern: any failure boots us back into
+# provisioning, captive portal up, customer can re-onboard without
+# re-flashing.
+#
+# Sizes:
+#   nvs       24 KiB   wifi creds + scadable_certs + libscadable state
+#   phy_init  4 KiB    radio calibration data (IDF default location)
+#   factory   1.5 MiB  this provisioning firmware (lots of headroom)
+#   ota_0     1.5 MiB  customer firmware slot A
+#   ota_1     1.5 MiB  customer firmware slot B
+#
+# Total: 4.5 MiB. Targets a 4 MiB chip if you swap factory→1.0 MiB; we
+# default to 8 MiB so customer firmwares aren't forced into a tight
+# slot. Override partition sizes in your own fork if you need to fit
+# 4 MiB.
+#
+# All offsets are sector-aligned (multiples of 0x1000). otadata is the
+# usual 0x2000 (two sectors) right after nvs+phy_init.
+#
+# Name,     Type, SubType, Offset,   Size,    Flags
+nvs,        data, nvs,     0x9000,   0x6000,
+phy_init,   data, phy,     0xf000,   0x1000,
+otadata,    data, ota,     0x10000,  0x2000,
+factory,    app,  factory, 0x20000,  0x180000,
+ota_0,      app,  ota_0,   0x1A0000, 0x180000,
+ota_1,      app,  ota_1,   0x320000, 0x180000,

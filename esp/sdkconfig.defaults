@@ -1,0 +1,57 @@
+# gateway-provisioning sdkconfig.defaults
+# SCADABLE 2026 · Apache-2.0
+#
+# Minimal IDF defaults. Anything not set here uses upstream IDF defaults.
+
+# ---------- Partition table ----------
+# Custom: factory + ota_0 + ota_1, see partitions.csv. The provisioning
+# firmware lives in `factory` permanently; customer firmware is OTA'd
+# into ota_0/ota_1.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x8000
+
+# ---------- Flash size ----------
+# 8 MiB target — leaves room for two 1.5 MiB OTA slots without
+# squeezing the customer firmware. Override to 4MB in your fork if you
+# pair this with a 4 MiB chip and trim the partition table.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
+
+# ---------- Bootloader rollback ----------
+# Required for OTA recovery: a freshly-swapped slot stays in "pending
+# verify" until the new firmware calls
+# esp_ota_mark_app_valid_cancel_rollback(). If it crashes before that
+# the bootloader reverts to the previous slot, falling back to factory
+# if both OTA slots are invalid. No bricking.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# ---------- HTTP server (captive portal) ----------
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=512
+
+# ---------- HTTP client (cloud health probe) ----------
+CONFIG_ESP_HTTP_CLIENT_ENABLE_HTTPS=y
+CONFIG_ESP_TLS_USING_MBEDTLS=y
+
+# ---------- mDNS ----------
+# Lets a customer hit `http://scadable-setup.local/` from a browser
+# instead of remembering 192.168.4.1 if their OS captive-portal popup
+# misses (some Android variants).
+CONFIG_MDNS_TASK_PRIORITY=1
+
+# ---------- Stacks ----------
+# 16 KiB main task is fine — the provisioning firmware doesn't have to
+# carry the cert store + EST machinery the gateway-linux side does.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+
+# ---------- LWIP ----------
+CONFIG_LWIP_MAX_SOCKETS=10
+
+# ---------- Log levels ----------
+CONFIG_BOOTLOADER_LOG_LEVEL_INFO=y
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# ---------- Compiler ----------
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
