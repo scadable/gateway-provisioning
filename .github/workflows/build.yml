@@ -6,9 +6,11 @@
 # dashboard supports today. Add new entries here when the dashboard
 # adds a new target.
 #
-# On tag pushes (e.g. v0.1.0) the firmware binary is also attached to
-# the GitHub release for SCADABLE engineers to grab into the
-# web-flasher manifest.
+# On tag pushes (e.g. v0.1.0) the firmware binaries are renamed with
+# a chip-family prefix (so esp32 + esp32s3 don't overwrite each other
+# on the release page), then attached to the GitHub release. A
+# follow-up `manifest` job assembles the esptool-js install manifest
+# the dashboard's WebSerial flasher expects.
 
 name: build
 
@@ -41,31 +43,70 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build with ESP-IDF
-        # Espressif's official action installs the toolchain and runs
-        # `idf.py build` inside a Docker image pinned to the requested
-        # IDF version. v5.1+ matches our `idf_component.yml` floor.
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v5.3
           target: ${{ matrix.target }}
           path: 'esp'
 
+      - name: Rename outputs with chip-family prefix
+        run: |
+          mkdir -p out
+          cp esp/build/gateway-provisioning.bin            out/${{ matrix.target }}-app.bin
+          cp esp/build/bootloader/bootloader.bin           out/${{ matrix.target }}-bootloader.bin
+          cp esp/build/partition_table/partition-table.bin out/${{ matrix.target }}-partition-table.bin
+
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gateway-provisioning-${{ matrix.target }}
-          path: |
-            esp/build/gateway-provisioning.bin
-            esp/build/bootloader/bootloader.bin
-            esp/build/partition_table/partition-table.bin
+          name: bins-${{ matrix.target }}
+          path: out/*
           if-no-files-found: error
 
       - name: Attach to GitHub release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            esp/build/gateway-provisioning.bin
-            esp/build/bootloader/bootloader.bin
-            esp/build/partition_table/partition-table.bin
+          files: out/*
+          fail_on_unmatched_files: true
+
+  manifest:
+    name: manifest.json
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Write manifest.json
+        run: |
+          cat > manifest.json <<EOF
+          {
+            "name": "scadable-gateway-provisioning",
+            "version": "${{ github.ref_name }}",
+            "builds": [
+              {
+                "chipFamily": "ESP32",
+                "parts": [
+                  { "path": "esp32-bootloader.bin",       "offset": 4096   },
+                  { "path": "esp32-partition-table.bin",  "offset": 32768  },
+                  { "path": "esp32-app.bin",              "offset": 131072 }
+                ]
+              },
+              {
+                "chipFamily": "ESP32-S3",
+                "parts": [
+                  { "path": "esp32s3-bootloader.bin",       "offset": 0      },
+                  { "path": "esp32s3-partition-table.bin",  "offset": 32768  },
+                  { "path": "esp32s3-app.bin",              "offset": 131072 }
+                ]
+              }
+            ]
+          }
+          EOF
+          cat manifest.json
+
+      - name: Attach manifest to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: manifest.json
           fail_on_unmatched_files: true
