@@ -988,6 +988,12 @@ static httpd_handle_t start_http_server(void)
     // wildcard = 13). Each entry is small (a httpd_uri_t pointer slot
     // in an internal array), so the heap impact is negligible.
     cfg.max_uri_handlers = 16;
+    // Bumped from default 4096 to 8192. The larger handler set + 302
+    // redirect chain from the captive-probe handlers (PR #8) pushed the
+    // httpd task past the 4 KB default and triggered a stack overflow on
+    // first client connect. ESP32 has plenty of RAM; 8 KB gives comfortable
+    // headroom without measurable heap pressure.
+    cfg.stack_size = 8192;
 
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &cfg) != ESP_OK) {
