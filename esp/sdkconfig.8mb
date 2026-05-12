@@ -1,0 +1,12 @@
+# gateway-provisioning sdkconfig overlay — 8 MiB flash variant
+# SCADABLE 2026 · Apache-2.0
+#
+# Layered on top of sdkconfig.defaults via:
+#   SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.8mb"
+#
+# Selects the 8 MiB partition table (1.5 MiB factory + two 1.5 MiB OTA
+# slots = 4.5 MiB used, leaving generous headroom).
+
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_8mb.csv"
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"

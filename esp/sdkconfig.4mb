@@ -1,0 +1,21 @@
+# gateway-provisioning sdkconfig overlay — 4 MiB flash variant
+# SCADABLE 2026 · Apache-2.0
+#
+# Layered on top of sdkconfig.defaults via:
+#   SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.4mb"
+#
+# Selects the 4 MiB partition table (1.25 MiB factory + two 1.25 MiB
+# OTA slots = ~3.85 MiB used, every byte accounted for). Most ESP32
+# dev boards in the wild are 4 MiB, so this variant is the default
+# pick for end-user provisioning unless the dashboard knows the chip
+# carries 8 MiB.
+#
+# Without this overlay the firmware header declares 8 MiB and any
+# 4 MiB chip kernel-panics in the bootloader before the captive
+# portal can come up:
+#   E (622) spi_flash: Detected size(4096k) smaller than the size in
+#   the binary image header(8192k). Probe failed.
+
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_4mb.csv"
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"

@@ -1,0 +1,38 @@
+# gateway-provisioning partition table — 4 MiB flash variant.
+# SCADABLE 2026 · Apache-2.0
+#
+# Selected by sdkconfig.4mb overlay. For 8 MiB chips see the companion
+# partitions_8mb.csv (selected by sdkconfig.8mb overlay).
+#
+# Strategy: same as the 8 MiB variant — provisioning firmware lives in
+# `factory` permanently; customer firmware is OTA'd into ota_0 / ota_1.
+# Bootloader prefers OTA but falls back to factory on invalid slots,
+# giving us the recovery-app pattern (any failure boots back into
+# provisioning, captive portal up, customer re-onboards without
+# re-flashing).
+#
+# Sizes (every byte accounted for):
+#   nvs       24 KiB    wifi creds + scadable_certs + libscadable state
+#   phy_init  4 KiB     radio calibration data (IDF default location)
+#   otadata   8 KiB     two sectors, IDF requirement
+#   factory   1.25 MiB  provisioning firmware (~600 KiB today, headroom)
+#   ota_0     1.25 MiB  customer firmware slot A
+#   ota_1     1.25 MiB  customer firmware slot B
+#
+# Total: 3.875 MiB used of a 4 MiB chip (128 KiB end-of-flash slack
+# left as a buffer for nvs growth or coredump partition later). Tight
+# but standard: most ESP32 dev boards in the wild are 4 MiB and this
+# is the layout esptool's default 4MB recipe targets.
+#
+# All offsets are sector-aligned (multiples of 0x1000). otadata sits
+# at 0x10000 right after nvs+phy_init, same as the 8 MiB variant — the
+# only deltas are the per-app slot size (0x140000 vs 0x180000) and the
+# total span (must fit under 0x400000 = 4 MiB).
+#
+# Name,     Type, SubType, Offset,   Size,    Flags
+nvs,        data, nvs,     0x9000,   0x6000,
+phy_init,   data, phy,     0xf000,   0x1000,
+otadata,    data, ota,     0x10000,  0x2000,
+factory,    app,  factory, 0x20000,  0x140000,
+ota_0,      app,  ota_0,   0x160000, 0x140000,
+ota_1,      app,  ota_1,   0x2A0000, 0x140000,
