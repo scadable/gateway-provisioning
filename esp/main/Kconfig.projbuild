@@ -38,13 +38,40 @@ config SCADABLE_AP_TIMEOUT_SECS
         forever until provisioned.
 
 config SCADABLE_WIFI_CONNECT_TIMEOUT_SECS
-    int "WiFi connect timeout in boot decision (seconds)"
+    int "WiFi connect timeout in boot decision (seconds, per attempt)"
     default 30
     help
-        How long boot_decision waits for a saved-creds WiFi connect to
-        succeed before falling back to AP mode. 30s is the default
-        IDF backoff window; lower this if you want faster recovery
-        when the saved network is gone.
+        How long boot_decision waits for a single saved-creds WiFi
+        connect attempt to succeed before declaring it failed. With
+        SCADABLE_WIFI_CONNECT_MAX_ATTEMPTS > 1 we'll retry after a
+        backoff; only after all attempts fail do we fall back to AP
+        mode. 30s is the default IDF backoff window; lower this if
+        you want faster recovery when the saved network is gone.
+
+config SCADABLE_WIFI_CONNECT_MAX_ATTEMPTS
+    int "Max WiFi connect attempts before AP fallback"
+    default 3
+    range 1 10
+    help
+        How many times boot_decision will try to join the saved WiFi
+        network before giving up and falling back to AP mode. A single
+        transient disconnect (auth flap, handshake timeout, beacon
+        loss, AP rate-limit, WPA renewal hiccup) used to drop the chip
+        into AP mode and require manual re-provisioning — not great
+        when the network is fine 5 seconds later. Default 3 covers
+        the common transient cases without making AP fallback feel
+        sluggish on a genuinely missing network. Set to 1 to restore
+        the old single-attempt behaviour.
+
+config SCADABLE_WIFI_CONNECT_RETRY_BACKOFF_SECS
+    int "Backoff between WiFi connect retries (seconds)"
+    default 5
+    range 0 60
+    help
+        Delay between successive saved-WiFi connect attempts. Gives
+        the AP a moment to recover from rate-limiting / transient
+        congestion before we hammer it again. Only relevant when
+        SCADABLE_WIFI_CONNECT_MAX_ATTEMPTS > 1.
 
 config SCADABLE_RECOVERY_BUTTON_HOLD_SECS
     int "GPIO0 hold time for NVS-wipe recovery (seconds)"
