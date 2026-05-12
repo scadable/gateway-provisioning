@@ -1,22 +1,24 @@
-# gateway-provisioning sdkconfig.defaults
+# gateway-provisioning sdkconfig.defaults — common base
 # SCADABLE 2026 · Apache-2.0
 #
-# Minimal IDF defaults. Anything not set here uses upstream IDF defaults.
+# Common settings shared by every flash-size variant. Size-specific
+# overlays (sdkconfig.4mb, sdkconfig.8mb) layer on top via the
+# SDKCONFIG_DEFAULTS env var in the CI workflow:
+#
+#   SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.4mb"
+#
+# ESP-IDF reads them in order, later wins. Keeping the partition table
+# selection + flash size in the overlay is what lets one source tree
+# build both 4 MiB and 8 MiB binaries from the same matrix job.
+#
+# Anything not set here uses upstream IDF defaults.
 
 # ---------- Partition table ----------
-# Custom: factory + ota_0 + ota_1, see partitions.csv. The provisioning
-# firmware lives in `factory` permanently; customer firmware is OTA'd
-# into ota_0/ota_1.
+# Custom: factory + ota_0 + ota_1. The actual partitions_<size>.csv
+# path is set in the size overlay. The provisioning firmware lives in
+# `factory` permanently; customer firmware is OTA'd into ota_0/ota_1.
 CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_PARTITION_TABLE_OFFSET=0x8000
-
-# ---------- Flash size ----------
-# 8 MiB target — leaves room for two 1.5 MiB OTA slots without
-# squeezing the customer firmware. Override to 4MB in your fork if you
-# pair this with a 4 MiB chip and trim the partition table.
-CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
-CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
 
 # ---------- Bootloader rollback ----------
 # Required for OTA recovery: a freshly-swapped slot stays in "pending

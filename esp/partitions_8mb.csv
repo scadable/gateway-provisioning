@@ -1,5 +1,8 @@
-# gateway-provisioning partition table.
+# gateway-provisioning partition table — 8 MiB flash variant.
 # SCADABLE 2026 · Apache-2.0
+#
+# Selected by sdkconfig.8mb overlay. For 4 MiB chips see the companion
+# partitions_4mb.csv (selected by sdkconfig.4mb overlay).
 #
 # Strategy: the *provisioning* firmware lives in `factory` permanently.
 # The customer's *real* firmware is OTA'd into ota_0 / ota_1. The
@@ -16,10 +19,8 @@
 #   ota_0     1.5 MiB  customer firmware slot A
 #   ota_1     1.5 MiB  customer firmware slot B
 #
-# Total: 4.5 MiB. Targets a 4 MiB chip if you swap factory→1.0 MiB; we
-# default to 8 MiB so customer firmwares aren't forced into a tight
-# slot. Override partition sizes in your own fork if you need to fit
-# 4 MiB.
+# Total: 4.5 MiB used of an 8 MiB chip — generous slack for customer
+# firmware growth.
 #
 # All offsets are sector-aligned (multiples of 0x1000). otadata is the
 # usual 0x2000 (two sectors) right after nvs+phy_init.
