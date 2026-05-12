@@ -168,9 +168,41 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     }
 }
 
+// Tear down the WiFi driver + STA netif so ap_provisioning_start()
+// can call esp_netif_create_default_wifi_ap() (and its own
+// esp_netif_create_default_wifi_sta() for APSTA scan support) without
+// hitting the assert at wifi_default.c:388 ("netif != NULL"). That
+// assert fires when the same default-wifi-sta slot is created twice
+// without a destroy in between — exactly what was happening on every
+// wrong-password boot before this fix (the chip rebooted in a tight
+// loop and the customer could never recover without reflashing).
+//
+// Idempotent: every step tolerates "already torn down" so callers
+// don't have to track whether they reached this point already.
+//   - esp_wifi_stop / deinit return ESP_ERR_WIFI_NOT_INIT when the
+//     driver was never started or was already deinit'd; that's fine.
+//   - esp_netif_get_handle_from_ifkey returns NULL when the netif
+//     was never created or was already destroyed; we just skip.
+static void teardown_sta_for_ap_mode(void)
+{
+    // Stop + deinit WiFi first. If neither was ever called we'll get
+    // ESP_ERR_WIFI_NOT_INIT back and that's fine — we're being
+    // defensive so this helper can run from any of the three
+    // "fall through to AP mode" sites in decide_mode().
+    esp_wifi_stop();
+    esp_wifi_deinit();
+
+    esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (sta_netif) {
+        esp_netif_destroy_default_wifi(sta_netif);
+        ESP_LOGI(TAG, "STA netif destroyed before AP fallback");
+    }
+}
+
 // Attempts to join the saved network. Returns true on success.
 // Leaves WiFi connected on success so cloud_check_run() can proceed
-// without re-doing the join. Stops + deinits the driver on failure
+// without re-doing the join. On failure: stops + deinits the driver
+// AND destroys the default STA netif (via teardown_sta_for_ap_mode)
 // so ap_provisioning_start() can re-init in AP mode cleanly.
 static bool try_connect_saved_wifi(const char *ssid, const char *password)
 {
@@ -238,8 +270,7 @@ static bool try_connect_saved_wifi(const char *ssid, const char *password)
              boot_state_wifi_attempt_to_string(outcome));
     esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, got_ip_h);
     esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, any_id_h);
-    esp_wifi_stop();
-    esp_wifi_deinit();
+    teardown_sta_for_ap_mode();
     return false;
 }
 
@@ -347,9 +378,10 @@ provisioning_mode_t decide_mode(void)
         ESP_LOGI(TAG, "Decision: WiFi up but cloud unreachable → AP mode "
                       "(maybe captive-portal'd network or DNS broken)");
         boot_state_set_reason(BOOT_REASON_CLOUD_UNREACHABLE);
-        // Tear down WiFi so ap_provisioning_start can re-init.
-        esp_wifi_stop();
-        esp_wifi_deinit();
+        // Tear down WiFi + STA netif so ap_provisioning_start can re-init.
+        // (Without destroying the default STA netif here too, the assert
+        // at wifi_default.c:388 would fire when AP mode brings APSTA up.)
+        teardown_sta_for_ap_mode();
         return MODE_AP;
     }
 
