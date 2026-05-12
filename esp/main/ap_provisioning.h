@@ -16,8 +16,10 @@ extern "C" {
  * way out is the customer submitting valid creds, which writes NVS
  * and reboots the chip from inside the HTTP handler.
  *
- * SSID format: "{COMPANY}-Setup-{6-char-uppercase-hex-MAC}"
- *   e.g. "SCADABLE-Setup-A4F3B2"
+ * SSID format: "{PREFIX}-{6-char-uppercase-hex-MAC}"
+ *   e.g. "SCADABLE-Setup-A4F3B2" (default prefix), or "Acme-Setup-A4F3B2"
+ *   when the org has set branding.ssid_prefix = "Acme-Setup" via the
+ *   dashboard's Branding tab. See branding.h.
  *
  * IP: 192.168.4.1 (IDF default for SoftAP). DNS sinkhole points all
  * lookups at that address so any browser request triggers the OS's
