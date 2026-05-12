@@ -109,24 +109,35 @@ static const char setup_page_template_html[] =
     "*{box-sizing:border-box;margin:0;padding:0}"
     ":root{--navy:#100831;--navy-2:#1a0f44;--surface:#1d1147;--surface-2:#251757;"
     "--cream:#F7ECE1;--cream-dim:rgba(247,236,225,.62);--cream-faint:rgba(247,236,225,.12);"
-    "--turq:#0CE7D0;--orange:#F56300;--row-h:60px}"
-    "html,body{background:var(--navy);color:var(--cream);min-height:100vh}"
-    "body{font:15px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
-    "padding:env(safe-area-inset-top) 16px env(safe-area-inset-bottom);"
-    "-webkit-font-smoothing:antialiased}"
-    ".wrap{max-width:480px;margin:0 auto;padding:24px 0 40px}"
-    ".brand{display:flex;align-items:center;gap:10px;margin-bottom:6px}"
+    "--turq:#0CE7D0;--orange:#F56300;--row-h:48px}"
+    // Lock the captive portal to one viewport on a phone — no page-level
+    // scrolling. The .wrap below is a flex column; the .list (network
+    // rows) is the only thing that scrolls, within its own bounds.
+    // Use 100dvh where supported (handles iOS Safari URL-bar collapse)
+    // with a 100vh fallback for older WebKit captive popovers.
+    "html,body{background:var(--navy);color:var(--cream);"
+    "height:100vh;height:100dvh;overflow:hidden}"
+    "body{font:14px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
+    "padding:env(safe-area-inset-top) 14px env(safe-area-inset-bottom);"
+    "-webkit-font-smoothing:antialiased;display:flex;flex-direction:column}"
+    ".wrap{max-width:480px;width:100%%;margin:0 auto;padding:10px 0 8px;"
+    "flex:1 1 auto;display:flex;flex-direction:column;min-height:0;overflow:hidden}"
+    ".brand{display:flex;align-items:center;gap:10px;margin-bottom:2px;flex:0 0 auto}"
     ".dot{width:10px;height:10px;border-radius:50%%;background:var(--turq);"
     "box-shadow:0 0 12px var(--turq)}"
-    ".logo-img{width:24px;height:24px;border-radius:4px;object-fit:contain;"
-    "background:rgba(247,236,225,.06)}"
-    ".wordmark{font-weight:700;letter-spacing:.18em;font-size:13px;color:var(--cream)}"
-    ".heading{font-size:24px;font-weight:600;margin-top:14px;color:var(--cream)}"
-    ".sub{font-size:13px;color:var(--cream-dim);margin-top:4px}"
-    ".sub code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;"
+    // Cap logo height so a customer's tall logo can't push the layout
+    // off-viewport. width/height set the default green-dot proxy size;
+    // max-height clamps customer <img class=\"logo-img\"> renders.
+    ".logo-img{width:24px;height:24px;max-height:80px;border-radius:4px;"
+    "object-fit:contain;background:rgba(247,236,225,.06)}"
+    ".wordmark{font-weight:700;letter-spacing:.18em;font-size:12px;color:var(--cream)}"
+    ".heading{font-size:20px;font-weight:600;margin-top:6px;color:var(--cream);"
+    "flex:0 0 auto}"
+    ".sub{font-size:12px;color:var(--cream-dim);margin-top:2px}"
+    ".sub code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;"
     "background:var(--cream-faint);padding:1px 6px;border-radius:4px}"
     ".bar{display:flex;align-items:center;justify-content:space-between;"
-    "margin:24px 0 8px}"
+    "margin:10px 0 4px;flex:0 0 auto}"
     ".bar h2{font-size:11px;text-transform:uppercase;letter-spacing:.12em;"
     "color:var(--cream-dim);font-weight:600}"
     ".refresh{appearance:none;background:none;border:0;color:var(--turq);font:inherit;"
@@ -136,10 +147,16 @@ static const char setup_page_template_html[] =
     ".refresh svg{width:14px;height:14px}"
     ".refresh.spin svg{animation:spin 1s linear infinite}"
     "@keyframes spin{to{transform:rotate(360deg)}}"
+    // The networks list is the ONLY scrollable region on the page.
+    // flex:1 1 auto + min-height:0 lets it absorb whatever vertical
+    // space remains after header + bar + hidden + foot have laid out;
+    // overflow-y:auto lets the rows scroll inside this box instead of
+    // pushing the page taller than the viewport.
     ".list{background:var(--surface);border:1px solid var(--cream-faint);"
-    "border-radius:14px;overflow:hidden}"
+    "border-radius:14px;overflow-y:auto;-webkit-overflow-scrolling:touch;"
+    "flex:1 1 auto;min-height:0}"
     ".row{display:flex;align-items:center;gap:12px;width:100%%;min-height:var(--row-h);"
-    "padding:10px 14px;background:transparent;border:0;border-bottom:1px solid var(--cream-faint);"
+    "padding:8px 12px;background:transparent;border:0;border-bottom:1px solid var(--cream-faint);"
     "color:var(--cream);text-align:left;font:inherit;cursor:pointer;"
     "-webkit-tap-highlight-color:rgba(12,231,208,.12)}"
     ".row:last-child{border-bottom:0}"
@@ -147,7 +164,7 @@ static const char setup_page_template_html[] =
     ".row[aria-expanded=true]{background:var(--surface-2)}"
     ".row .lock{width:14px;height:14px;flex:0 0 14px;color:var(--cream-dim)}"
     ".row .lock.empty{visibility:hidden}"
-    ".row .name{flex:1;font-size:15px;font-weight:500;white-space:nowrap;"
+    ".row .name{flex:1;font-size:14px;font-weight:500;white-space:nowrap;"
     "overflow:hidden;text-overflow:ellipsis}"
     ".row .right{display:flex;align-items:center;gap:10px;flex:0 0 auto}"
     ".bars{display:inline-flex;align-items:flex-end;gap:2px;height:14px}"
@@ -158,7 +175,7 @@ static const char setup_page_template_html[] =
     ".bars i.on{background:var(--turq)}"
     ".chev{width:10px;height:10px;color:var(--cream-dim);transition:transform .15s}"
     ".row[aria-expanded=true] .chev{transform:rotate(90deg);color:var(--turq)}"
-    ".panel{display:none;padding:14px 16px 18px;background:var(--navy-2);"
+    ".panel{display:none;padding:10px 12px 12px;background:var(--navy-2);"
     "border-bottom:1px solid var(--cream-faint)}"
     ".panel.open{display:block}"
     ".list .row + .panel{border-top:0}"
@@ -167,7 +184,7 @@ static const char setup_page_template_html[] =
     ".pwrap{position:relative}"
     "input[type=text],input[type=password]{width:100%%;background:var(--surface);"
     "color:var(--cream);border:1px solid var(--cream-faint);border-radius:10px;"
-    "padding:12px 44px 12px 14px;font:inherit;min-height:44px}"
+    "padding:10px 44px 10px 14px;font:inherit;min-height:44px}"
     "input:focus{outline:none;border-color:var(--turq);"
     "box-shadow:0 0 0 3px rgba(12,231,208,.18)}"
     ".eye{position:absolute;right:6px;top:50%%;transform:translateY(-50%%);"
@@ -176,18 +193,18 @@ static const char setup_page_template_html[] =
     "border-radius:8px}"
     ".eye:hover{color:var(--turq)}"
     ".eye svg{width:18px;height:18px}"
-    ".cta{display:block;width:100%%;margin-top:14px;background:var(--orange);"
-    "color:#fff;border:0;padding:14px;border-radius:10px;"
-    "font:600 15px/1 inherit;cursor:pointer;min-height:48px}"
+    ".cta{display:block;width:100%%;margin-top:10px;background:var(--orange);"
+    "color:#fff;border:0;padding:12px;border-radius:10px;"
+    "font:600 14px/1 inherit;cursor:pointer;min-height:44px}"
     ".cta:hover{filter:brightness(1.08)}"
     ".cta:disabled{opacity:.55;cursor:not-allowed;filter:none}"
     ".cta.secondary{background:transparent;color:var(--turq);"
     "border:1px solid var(--cream-faint);font-weight:500}"
-    ".perr{margin-top:10px;font-size:13px;color:#FFB199;min-height:18px}"
-    ".empty,.skeleton{padding:18px 16px;color:var(--cream-dim);font-size:14px;"
+    ".perr{margin-top:8px;font-size:12px;color:#FFB199;min-height:16px}"
+    ".empty,.skeleton{padding:14px 16px;color:var(--cream-dim);font-size:13px;"
     "text-align:center}"
     ".sk-row{display:flex;align-items:center;gap:12px;min-height:var(--row-h);"
-    "padding:10px 14px;border-bottom:1px solid var(--cream-faint)}"
+    "padding:8px 12px;border-bottom:1px solid var(--cream-faint)}"
     ".sk-row:last-child{border-bottom:0}"
     ".sk{background:var(--cream-faint);border-radius:6px;height:12px;"
     "animation:pulse 1.4s ease-in-out infinite}"
@@ -195,13 +212,17 @@ static const char setup_page_template_html[] =
     ".sk.name{flex:1;max-width:60%%}"
     ".sk.bars{width:18px;height:14px}"
     "@keyframes pulse{0%%,100%%{opacity:.4}50%%{opacity:.85}}"
-    ".hidden{margin-top:18px;background:var(--surface);border:1px solid var(--cream-faint);"
-    "border-radius:14px;padding:14px 16px}"
-    ".hidden summary{cursor:pointer;font-size:13px;color:var(--turq);"
-    "list-style:none;display:flex;align-items:center;gap:8px;min-height:32px}"
+    // The hidden-network details block sits below the network list.
+    // flex:0 0 auto so it never grows; collapsed it's just one row of
+    // the summary text. When the user opens it the form pushes content
+    // up but the .list above will shrink (flex:1) to compensate.
+    ".hidden{margin-top:8px;background:var(--surface);border:1px solid var(--cream-faint);"
+    "border-radius:14px;padding:8px 12px;flex:0 0 auto}"
+    ".hidden summary{cursor:pointer;font-size:12px;color:var(--turq);"
+    "list-style:none;display:flex;align-items:center;gap:8px;min-height:28px}"
     ".hidden summary::-webkit-details-marker{display:none}"
-    ".hidden[open] summary{margin-bottom:12px}"
-    ".hidden .stack{display:flex;flex-direction:column;gap:10px}"
+    ".hidden[open] summary{margin-bottom:8px}"
+    ".hidden .stack{display:flex;flex-direction:column;gap:8px}"
     ".overlay{position:fixed;inset:0;background:rgba(16,8,49,.92);display:none;"
     "align-items:center;justify-content:center;padding:24px;z-index:10}"
     ".overlay.show{display:flex}"
@@ -216,8 +237,8 @@ static const char setup_page_template_html[] =
     "margin:0 auto 12px;font-size:20px;font-weight:700}"
     ".panel-mod .retry{margin-top:8px;background:var(--turq);color:var(--navy);"
     "border:0;padding:10px 18px;border-radius:8px;font:600 14px inherit;cursor:pointer}"
-    ".foot{margin-top:24px;font-size:11px;color:var(--cream-dim);text-align:center;"
-    "letter-spacing:.04em}"
+    ".foot{margin-top:8px;font-size:10px;color:var(--cream-dim);text-align:center;"
+    "letter-spacing:.04em;flex:0 0 auto}"
     "</style>"
     // Accent color override (branding.accent_color). Wrapped in its
     // own <style> block so it can target only --orange without
@@ -241,18 +262,19 @@ static const char setup_page_template_html[] =
     // Boot diagnostics banner. Hidden by default; populated and shown
     // by the JS at the bottom of this page on /state fetch. Inline
     // styles (rather than the main stylesheet) so this banner is
-    // self-contained — easier to merge with the parallel org-branding
-    // PR that's also reworking the stylesheet.
-    "<div id=\"sb\" style=\"display:none;padding:14px 16px;margin-top:18px;"
+    // self-contained. Tightened padding/margins (vs the original
+    // 14/18px) to keep the page within one viewport when the banner
+    // IS visible.
+    "<div id=\"sb\" style=\"display:none;padding:10px 12px;margin-top:8px;"
     "border-radius:12px;background:rgba(245,99,0,.10);border:1px solid var(--orange);"
-    "color:var(--cream)\">"
-    "<div style=\"font-weight:600;color:var(--orange);margin-bottom:6px;display:flex;"
+    "color:var(--cream);flex:0 0 auto\">"
+    "<div style=\"font-weight:600;color:var(--orange);margin-bottom:4px;display:flex;"
     "align-items:center;gap:8px\">"
     "<span id=\"sb-icon\" aria-hidden=\"true\">&#9888;</span>"
     "<span id=\"sb-title\">Heads up</span>"
     "</div>"
-    "<div id=\"sb-msg\" style=\"font-size:14px;line-height:1.45;color:var(--cream);"
-    "margin-bottom:10px\"></div>"
+    "<div id=\"sb-msg\" style=\"font-size:13px;line-height:1.4;color:var(--cream);"
+    "margin-bottom:8px\"></div>"
     "<div style=\"display:flex;align-items:center;gap:10px;flex-wrap:wrap\">"
     "<button id=\"sb-copy\" type=\"button\" style=\"font-size:12px;padding:6px 12px;"
     "background:var(--orange);color:#fff;border:0;border-radius:6px;cursor:pointer;"
