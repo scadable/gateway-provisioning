@@ -1,16 +1,23 @@
 # gateway-provisioning CI
 # SCADABLE 2026 · Apache-2.0
 #
-# Builds the ESP-IDF firmware on every push and PR. Matrix covers
-# ESP32-classic and ESP32-S3 — those are the two chips the SCADABLE
-# dashboard supports today. Add new entries here when the dashboard
-# adds a new target.
+# Builds the ESP-IDF firmware on every push and PR. Matrix covers the
+# product of {chip target} × {flash size}, because most ESP32 dev
+# boards in the wild are 4 MiB while the products SCADABLE ships are
+# typically 8 MiB. One source tree, four binaries, no in-the-field
+# bootloader-panic on a small chip.
 #
-# On tag pushes (e.g. v0.1.0) the firmware binaries are renamed with
-# a chip-family prefix (so esp32 + esp32s3 don't overwrite each other
-# on the release page), then attached to the GitHub release. A
-# follow-up `manifest` job assembles the esptool-js install manifest
-# the dashboard's WebSerial flasher expects.
+# On tag pushes (e.g. v0.1.4) the firmware binaries are renamed with
+# a `<target>-<flash_size>` prefix (so esp32-4mb + esp32-8mb +
+# esp32s3-4mb + esp32s3-8mb don't overwrite each other on the release
+# page), then attached to the GitHub release. A follow-up `manifest`
+# job assembles the esptool-js install manifest the dashboard's
+# WebSerial flasher expects — the dashboard picks the matching build
+# from the manifest based on the chip + flash size it probes from the
+# connected device.
+#
+# Add new entries to the matrix when the dashboard adds a new target
+# or a new flash-size SKU.
 
 name: build
 
@@ -32,34 +39,46 @@ permissions:
 
 jobs:
   build:
-    name: build (${{ matrix.target }})
+    name: build (${{ matrix.target }}-${{ matrix.flash_size }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         target: [esp32, esp32s3]
+        flash_size: [4mb, 8mb]
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Build with ESP-IDF
         uses: espressif/esp-idf-ci-action@v1
+        env:
+          # Layered defaults: common base + size overlay. ESP-IDF reads
+          # these in order, later wins. The size overlay is what flips
+          # CONFIG_PARTITION_TABLE_CUSTOM_FILENAME and
+          # CONFIG_ESPTOOLPY_FLASHSIZE_<N>MB so the same source tree
+          # produces a 4 MiB-safe binary or an 8 MiB binary depending
+          # on the matrix axis. ESP-IDF requires forward slashes here
+          # even on POSIX; the path is relative to the project dir
+          # passed via `path:` below.
+          SDKCONFIG_DEFAULTS: "sdkconfig.defaults;sdkconfig.${{ matrix.flash_size }}"
         with:
           esp_idf_version: v5.3
           target: ${{ matrix.target }}
           path: 'esp'
 
-      - name: Rename outputs with chip-family prefix
+      - name: Rename outputs with target+flash-size prefix
         run: |
           mkdir -p out
-          cp esp/build/gateway-provisioning.bin            out/${{ matrix.target }}-app.bin
-          cp esp/build/bootloader/bootloader.bin           out/${{ matrix.target }}-bootloader.bin
-          cp esp/build/partition_table/partition-table.bin out/${{ matrix.target }}-partition-table.bin
+          PREFIX="${{ matrix.target }}-${{ matrix.flash_size }}"
+          cp esp/build/gateway-provisioning.bin            "out/${PREFIX}-app.bin"
+          cp esp/build/bootloader/bootloader.bin           "out/${PREFIX}-bootloader.bin"
+          cp esp/build/partition_table/partition-table.bin "out/${PREFIX}-partition-table.bin"
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bins-${{ matrix.target }}
+          name: bins-${{ matrix.target }}-${{ matrix.flash_size }}
           path: out/*
           if-no-files-found: error
 
@@ -78,6 +97,15 @@ jobs:
 
     steps:
       - name: Write manifest.json
+        # esptool-js install manifest. `chipFamily` is the device
+        # property the WebSerial flasher reads from the connected
+        # board; `flashSize` lets the dashboard disambiguate which
+        # build to pick after probing the SPI flash size on connect.
+        # Bootloader offset on ESP32 is 0x1000 (4096); on ESP32-S3 it
+        # is 0x0 (the ROM bootloader expects the second-stage
+        # bootloader at offset 0). Partition table is at
+        # CONFIG_PARTITION_TABLE_OFFSET=0x8000 (32768) on both;
+        # application starts at 0x20000 (131072) per partitions_*.csv.
         run: |
           cat > manifest.json <<EOF
           {
@@ -86,18 +114,38 @@ jobs:
             "builds": [
               {
                 "chipFamily": "ESP32",
+                "flashSize": "4MB",
                 "parts": [
-                  { "path": "esp32-bootloader.bin",       "offset": 4096   },
-                  { "path": "esp32-partition-table.bin",  "offset": 32768  },
-                  { "path": "esp32-app.bin",              "offset": 131072 }
+                  { "path": "esp32-4mb-bootloader.bin",       "offset": 4096   },
+                  { "path": "esp32-4mb-partition-table.bin",  "offset": 32768  },
+                  { "path": "esp32-4mb-app.bin",              "offset": 131072 }
+                ]
+              },
+              {
+                "chipFamily": "ESP32",
+                "flashSize": "8MB",
+                "parts": [
+                  { "path": "esp32-8mb-bootloader.bin",       "offset": 4096   },
+                  { "path": "esp32-8mb-partition-table.bin",  "offset": 32768  },
+                  { "path": "esp32-8mb-app.bin",              "offset": 131072 }
                 ]
               },
               {
                 "chipFamily": "ESP32-S3",
+                "flashSize": "4MB",
                 "parts": [
-                  { "path": "esp32s3-bootloader.bin",       "offset": 0      },
-                  { "path": "esp32s3-partition-table.bin",  "offset": 32768  },
-                  { "path": "esp32s3-app.bin",              "offset": 131072 }
+                  { "path": "esp32s3-4mb-bootloader.bin",       "offset": 0      },
+                  { "path": "esp32s3-4mb-partition-table.bin",  "offset": 32768  },
+                  { "path": "esp32s3-4mb-app.bin",              "offset": 131072 }
+                ]
+              },
+              {
+                "chipFamily": "ESP32-S3",
+                "flashSize": "8MB",
+                "parts": [
+                  { "path": "esp32s3-8mb-bootloader.bin",       "offset": 0      },
+                  { "path": "esp32s3-8mb-partition-table.bin",  "offset": 32768  },
+                  { "path": "esp32s3-8mb-app.bin",              "offset": 131072 }
                 ]
               }
             ]
