@@ -7,10 +7,12 @@
 // silently fail and leave the device looking dead.
 //
 // All four checks are bundled here so main.c can stay a flat
-// dispatcher. The function is allowed to take ~30s in the worst case
-// (waiting for an unreachable WiFi network), which is fine — boot
-// time isn't a tight constraint for a device that just came out of
-// its box.
+// dispatcher. The function is allowed to take ~100s in the worst case
+// (3 saved-WiFi attempts × 30s timeout + 5s backoff between each
+// before falling back to AP mode), which is fine — boot time isn't a
+// tight constraint for a device that just came out of its box, and
+// "retry a couple times before giving up" is materially better than
+// "one transient handshake glitch → manual re-provisioning."
 
 #include "boot_decision.h"
 
@@ -151,12 +153,18 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data)
 {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        // First-attempt connect kick-off. Subsequent retries call
+        // esp_wifi_connect() directly from try_connect_saved_wifi()'s
+        // outer loop — we deliberately do NOT auto-reconnect from
+        // inside the disconnect branch below, because the outer loop
+        // owns the retry policy (count + backoff) and needs to be the
+        // one deciding when to retry vs. give up.
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        // No retries — boot_decision is a single attempt by design.
-        // If it fails the customer needs to (re-)provision. Capture
-        // the reason code so try_connect_saved_wifi() can report a
-        // structured outcome to boot_state.
+        // Capture the reason code; the outer loop will inspect this
+        // when WIFI_FAIL_BIT trips and decide whether to retry. This
+        // is also persisted to boot_state on the final failure so the
+        // captive portal banner can show the operator what went wrong.
         if (event_data) {
             wifi_event_sta_disconnected_t *e = (wifi_event_sta_disconnected_t *)event_data;
             s_last_disconnect_reason = e->reason;
@@ -168,10 +176,24 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     }
 }
 
-// Attempts to join the saved network. Returns true on success.
-// Leaves WiFi connected on success so cloud_check_run() can proceed
-// without re-doing the join. Stops + deinits the driver on failure
-// so ap_provisioning_start() can re-init in AP mode cleanly.
+// Attempts to join the saved network with retry policy. Returns true on
+// success. Leaves WiFi connected on success so cloud_check_run() can
+// proceed without re-doing the join. Stops + deinits the driver on
+// final failure so ap_provisioning_start() can re-init in AP mode cleanly.
+//
+// Retry policy (CONFIG_SCADABLE_WIFI_CONNECT_MAX_ATTEMPTS, default 3):
+// any single disconnect (auth flap, handshake timeout, beacon loss, AP
+// rate-limit, WPA renewal hiccup) is treated as transient and retried
+// after CONFIG_SCADABLE_WIFI_CONNECT_RETRY_BACKOFF_SECS (default 5s).
+// Only after every attempt fails do we declare the network unreachable
+// and fall back to AP mode. The driver + netif are init'd once outside
+// the loop and reused across attempts — only esp_wifi_connect() is
+// re-issued per retry, which is the IDF-blessed reconnect idiom.
+//
+// Each attempt's per-attempt timeout is CONFIG_SCADABLE_WIFI_CONNECT_TIMEOUT_SECS;
+// worst-case wall time is N * (timeout + backoff). With defaults that's
+// 3 * (30 + 5) = 105s before AP fallback — still well under the
+// "operator gives up and unplugs the chip" threshold.
 static bool try_connect_saved_wifi(const char *ssid, const char *password)
 {
     s_wifi_event_group = xEventGroupCreate();
@@ -200,16 +222,62 @@ static bool try_connect_saved_wifi(const char *ssid, const char *password)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "Attempting to join saved network '%s' (timeout %ds)",
-             ssid, CONFIG_SCADABLE_WIFI_CONNECT_TIMEOUT_SECS);
+    const int max_attempts = CONFIG_SCADABLE_WIFI_CONNECT_MAX_ATTEMPTS;
+    const int backoff_secs = CONFIG_SCADABLE_WIFI_CONNECT_RETRY_BACKOFF_SECS;
+    const int per_attempt_timeout_secs = CONFIG_SCADABLE_WIFI_CONNECT_TIMEOUT_SECS;
 
-    EventBits_t bits = xEventGroupWaitBits(
-        s_wifi_event_group,
-        WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-        pdFALSE, pdFALSE,
-        pdMS_TO_TICKS(CONFIG_SCADABLE_WIFI_CONNECT_TIMEOUT_SECS * 1000));
+    EventBits_t bits = 0;
+    bool success = false;
 
-    bool success = (bits & WIFI_CONNECTED_BIT) != 0;
+    for (int attempt = 1; attempt <= max_attempts; attempt++) {
+        // Reset the event group + reason capture for this attempt so
+        // we don't latch a stale FAIL_BIT from the previous iteration.
+        xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
+        s_last_disconnect_reason = 0;
+
+        // First attempt is kicked off by the WIFI_EVENT_STA_START
+        // handler (fired by esp_wifi_start() above); for retries we
+        // call esp_wifi_connect() directly. esp_wifi_connect() may
+        // legitimately return ESP_ERR_WIFI_CONN if the previous
+        // attempt's state machine hasn't fully torn down — log and
+        // proceed; the wait below will time out and trigger another
+        // retry naturally.
+        if (attempt > 1) {
+            esp_err_t cerr = esp_wifi_connect();
+            if (cerr != ESP_OK) {
+                ESP_LOGW(TAG, "esp_wifi_connect() returned %s on retry %d/%d",
+                         esp_err_to_name(cerr), attempt, max_attempts);
+            }
+        }
+
+        ESP_LOGI(TAG, "Joining '%s' attempt %d/%d (timeout %ds)",
+                 ssid, attempt, max_attempts, per_attempt_timeout_secs);
+
+        bits = xEventGroupWaitBits(
+            s_wifi_event_group,
+            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+            pdFALSE, pdFALSE,
+            pdMS_TO_TICKS(per_attempt_timeout_secs * 1000));
+
+        if (bits & WIFI_CONNECTED_BIT) {
+            success = true;
+            break;
+        }
+
+        // This attempt failed (either FAIL_BIT or a hard timeout with
+        // no events). Log + back off before the next retry — the AP
+        // may be rate-limiting us or recovering from its own glitch.
+        if (attempt < max_attempts) {
+            ESP_LOGW(TAG, "Attempt %d/%d failed (bits=0x%x reason=%u); "
+                          "backing off %ds before retry",
+                     attempt, max_attempts, (int)bits,
+                     s_last_disconnect_reason, backoff_secs);
+            if (backoff_secs > 0) {
+                vTaskDelay(pdMS_TO_TICKS(backoff_secs * 1000));
+            }
+        }
+    }
+
     if (success) {
         ESP_LOGI(TAG, "WiFi connected");
         // Persist success + the SSID so the next boot's /state can
@@ -220,21 +288,22 @@ static bool try_connect_saved_wifi(const char *ssid, const char *password)
         return true;
     }
 
-    // Failure: classify the disconnect reason and persist it. The next
-    // boot's captive portal will surface this so the operator knows
-    // what went wrong on their last attempt.
+    // Final failure: classify the most recent disconnect reason and
+    // persist it. The next boot's captive portal will surface this so
+    // the operator knows what went wrong on their last attempt.
     boot_wifi_attempt_t outcome;
-    if (bits == 0) {
-        // Timed out without ever getting WIFI_FAIL_BIT — driver never
-        // produced a disconnect event. Treat as timeout.
+    if (bits == 0 && s_last_disconnect_reason == 0) {
+        // Last attempt timed out without ever getting WIFI_FAIL_BIT —
+        // driver never produced a disconnect event. Treat as timeout.
         outcome = BOOT_WIFI_ATTEMPT_TIMEOUT;
     } else {
         outcome = map_disconnect_reason(s_last_disconnect_reason);
     }
     boot_state_record_wifi_attempt(outcome, NULL);
 
-    ESP_LOGW(TAG, "WiFi connect failed (bits=0x%x reason=%u → %s) — tearing down for AP mode",
-             (int)bits, s_last_disconnect_reason,
+    ESP_LOGW(TAG, "WiFi connect failed after %d attempts "
+                  "(last bits=0x%x reason=%u → %s) — tearing down for AP mode",
+             max_attempts, (int)bits, s_last_disconnect_reason,
              boot_state_wifi_attempt_to_string(outcome));
     esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, got_ip_h);
     esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, any_id_h);
