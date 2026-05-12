@@ -7,6 +7,7 @@ idf_component_register(
         "boot_decision.c"
         "ap_provisioning.c"
         "cloud_check.c"
+        "branding.c"
     INCLUDE_DIRS
         "."
     REQUIRES

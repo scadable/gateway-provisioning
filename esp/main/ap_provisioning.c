@@ -7,7 +7,9 @@
 // network is gone, or cloud unreachable), we end up here.
 //
 // What runs:
-//   - WiFi in AP mode, SSID "{COMPANY}-Setup-{MAC6}", IP 192.168.4.1
+//   - WiFi in AP mode, SSID "{PREFIX}-{MAC6}", IP 192.168.4.1
+//     (PREFIX defaults to CONFIG_SCADABLE_COMPANY_NAME "-Setup", or
+//     comes from branding.ssid_prefix in NVS — see branding.h)
 //   - DHCP server (handed to us by IDF's esp_netif_create_default_wifi_ap)
 //   - DNS sinkhole on UDP/53 — every A query resolves to 192.168.4.1
 //     so any browser request triggers the OS captive-portal popup
@@ -36,6 +38,7 @@
 #include <sys/param.h>
 #include <sys/socket.h>
 
+#include "branding.h"
 #include "cJSON.h"
 #include "esp_event.h"
 #include "esp_http_server.h"
@@ -82,10 +85,13 @@ static const char *TAG = "scadable.ap";
 // ─── HTTP handlers ─────────────────────────────────────────────────
 
 // Format args, in order:
-//   1. company name (used in <title>)
-//   2. company name (rendered as wordmark in the brand banner)
-//   3. AP SSID (so the customer can confirm they're on the right
-//               device when multiple are nearby)
+//   1. page <title> (branding.title)
+//   2. accent color override (CSS — replaces --orange CTA on .cta + .panel-mod retry)
+//   3. brand banner HTML (either the default green dot OR an <img> tag
+//                          with the customer's logo URL)
+//   4. wordmark text (branding-derived, defaults to CONFIG_SCADABLE_COMPANY_NAME)
+//   5. body HTML block (customer body OR the canonical default <p>
+//                       with the AP SSID embedded)
 //
 // Note: every literal `%` in CSS (e.g. `width:100%`) must be doubled
 // to `%%` because this string is fed through snprintf().
@@ -96,7 +102,7 @@ static const char setup_page_template_html[] =
     "<meta charset=\"utf-8\">"
     "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">"
     "<meta name=\"theme-color\" content=\"#100831\">"
-    "<title>%s setup</title>"
+    "<title>%s</title>"
     "<style>"
     "*{box-sizing:border-box;margin:0;padding:0}"
     ":root{--navy:#100831;--navy-2:#1a0f44;--surface:#1d1147;--surface-2:#251757;"
@@ -110,6 +116,8 @@ static const char setup_page_template_html[] =
     ".brand{display:flex;align-items:center;gap:10px;margin-bottom:6px}"
     ".dot{width:10px;height:10px;border-radius:50%%;background:var(--turq);"
     "box-shadow:0 0 12px var(--turq)}"
+    ".logo-img{width:24px;height:24px;border-radius:4px;object-fit:contain;"
+    "background:rgba(247,236,225,.06)}"
     ".wordmark{font-weight:700;letter-spacing:.18em;font-size:13px;color:var(--cream)}"
     ".heading{font-size:24px;font-weight:600;margin-top:14px;color:var(--cream)}"
     ".sub{font-size:13px;color:var(--cream-dim);margin-top:4px}"
@@ -209,14 +217,24 @@ static const char setup_page_template_html[] =
     ".foot{margin-top:24px;font-size:11px;color:var(--cream-dim);text-align:center;"
     "letter-spacing:.04em}"
     "</style>"
+    // Accent color override (branding.accent_color). Wrapped in its
+    // own <style> block so it can target only --orange without
+    // re-doubling every `%` in the main stylesheet. snprintf injects
+    // either the customer's color or the default #F56300.
+    "<style>:root{--orange:%s}</style>"
     "</head>"
     "<body>"
     "<main class=\"wrap\">"
-    "<div class=\"brand\"><span class=\"dot\" aria-hidden=\"true\"></span>"
+    // Brand banner: either the default green dot, or an <img> with
+    // the customer's logo URL. The wordmark text falls back to the
+    // company name.
+    "<div class=\"brand\">%s"
     "<span class=\"wordmark\">%s</span></div>"
     "<h1 class=\"heading\">Setup device</h1>"
-    "<p class=\"sub\">Pick the WiFi network this gateway should use. "
-    "You're connected to <code>%s</code>.</p>"
+    // Body block: either the customer's body_html, or the canonical
+    // default paragraph with the AP SSID baked in. handler_root
+    // constructs the substitution server-side.
+    "%s"
 
     "<div class=\"bar\">"
     "<h2>Networks</h2>"
@@ -412,9 +430,11 @@ static const char setup_page_template_html[] =
     "</script>"
     "</body></html>";
 
-// Serve the setup page. Renders the company name + SSID into the
-// template. We use a heap buffer because the rendered HTML can run a
-// few KB and we want to keep the stack small.
+// Serve the setup page. Renders the customer's branding template
+// (title, body HTML, SSID, accent color, logo URL) into the HTML,
+// falling back to firmware defaults for any field the org hasn't
+// customized. We use a heap buffer because the rendered HTML can run
+// 20+ KB once branding is applied and we want to keep the stack small.
 static esp_err_t handler_root(httpd_req_t *req)
 {
     char ap_ssid[33] = {0};
@@ -425,18 +445,78 @@ static esp_err_t handler_root(httpd_req_t *req)
         strcpy(ap_ssid, "(unknown)");
     }
 
-    // 20 KB upper bound — template is ~15 KB rendered (Mac-style WiFi
-    // list view + inline SVG icons + connecting/success overlay).
-    enum { SETUP_PAGE_BUF = 20480 };
+    // Load org branding from NVS namespace `scadable_brand`. Every
+    // field independently falls back to its compile-time default when
+    // the key is missing, so an un-branded chip still produces well-
+    // formed HTML (this is the steady state for the SCADABLE-owned
+    // factory firmware before any customer ever sees it).
+    branding_t br;
+    branding_load(&br);
+
+    // Build the brand-banner block. With a logo URL we emit an <img>;
+    // without one, the default green dot. Sized to fit either form.
+    char banner[BRANDING_LOGO_MAX + 256] = {0};
+    if (br.logo_url[0]) {
+        snprintf(banner, sizeof(banner),
+                 "<img class=\"logo-img\" src=\"%s\" alt=\"\">",
+                 br.logo_url);
+    } else {
+        snprintf(banner, sizeof(banner),
+                 "<span class=\"dot\" aria-hidden=\"true\"></span>");
+    }
+
+    // Wordmark text — defaults to the company name if the customer
+    // hasn't customized. Reuse the title's first word as a tasteful
+    // fallback wordmark only when no title is set; if branding.title
+    // IS set, we still want the wordmark to be the company-ish name,
+    // so derive from ssid_prefix (which the customer also sets) by
+    // stripping the "-Setup" suffix if present.
+    char wordmark[BRANDING_SSID_MAX] = {0};
+    strncpy(wordmark, br.ssid_prefix, sizeof(wordmark) - 1);
+    wordmark[sizeof(wordmark) - 1] = '\0';
+    // Lop off a trailing "-Setup" so "Acme-Setup" displays as "Acme".
+    size_t wm_len = strlen(wordmark);
+    static const char setup_suffix[] = "-Setup";
+    static const size_t setup_suffix_len = sizeof(setup_suffix) - 1;
+    if (wm_len >= setup_suffix_len &&
+        strcmp(wordmark + wm_len - setup_suffix_len, setup_suffix) == 0) {
+        wordmark[wm_len - setup_suffix_len] = '\0';
+    }
+    if (wordmark[0] == '\0') {
+        strncpy(wordmark, CONFIG_SCADABLE_COMPANY_NAME, sizeof(wordmark) - 1);
+    }
+
+    // Build the body block. With a customer body_html, use it verbatim
+    // (no sanitization — this is the customer's own org's branding,
+    // gated admin-only at write time on the cloud side). Without one,
+    // render the canonical default paragraph with the AP SSID embedded.
+    char body[BRANDING_BODY_MAX + 256] = {0};
+    if (br.body[0]) {
+        // Customer-supplied body. Wrap in nothing — the customer can
+        // bring their own <p>s, <h2>s, etc.
+        snprintf(body, sizeof(body), "%s", br.body);
+    } else {
+        snprintf(body, sizeof(body),
+                 "<p class=\"sub\">Pick the WiFi network this gateway should use. "
+                 "You're connected to <code>%s</code>.</p>",
+                 ap_ssid);
+    }
+
+    // 24 KB upper bound — base template is ~15 KB; branding can add
+    // up to ~2.5 KB of customer body HTML + ~500 B of logo URL +
+    // smaller fields. Generous headroom over the worst case.
+    enum { SETUP_PAGE_BUF = 24576 };
     char *buf = malloc(SETUP_PAGE_BUF);
     if (!buf) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
         return ESP_FAIL;
     }
     int n = snprintf(buf, SETUP_PAGE_BUF, setup_page_template_html,
-                     CONFIG_SCADABLE_COMPANY_NAME,
-                     CONFIG_SCADABLE_COMPANY_NAME,
-                     ap_ssid);
+                     br.title,         // <title>
+                     br.accent_color,  // CSS --orange override
+                     banner,           // brand-banner HTML
+                     wordmark,         // wordmark text
+                     body);            // body block
     if (n < 0 || n >= SETUP_PAGE_BUF) {
         free(buf);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "render");
@@ -669,14 +749,20 @@ static void dns_sinkhole_task(void *arg)
 
 // ─── Setup ─────────────────────────────────────────────────────────
 
-// Build SSID "{COMPANY}-Setup-{6 hex chars from MAC}" into the
-// caller's buffer. e.g. "SCADABLE-Setup-A4F3B2".
+// Build SSID "{PREFIX}-{6 hex chars from MAC}" into the caller's
+// buffer. e.g. "Acme-Setup-A4F3B2" when the org has set
+// branding.ssid_prefix = "Acme-Setup"; otherwise the firmware default
+// "SCADABLE-Setup-A4F3B2". The MAC-suffix logic is preserved verbatim
+// — only the prefix is customizable.
 static void build_ap_ssid(char *out, size_t cap)
 {
+    branding_t br;
+    branding_load(&br);
+
     uint8_t mac[6] = {0};
     esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
-    snprintf(out, cap, "%s-Setup-%02X%02X%02X",
-             CONFIG_SCADABLE_COMPANY_NAME, mac[3], mac[4], mac[5]);
+    snprintf(out, cap, "%s-%02X%02X%02X",
+             br.ssid_prefix, mac[3], mac[4], mac[5]);
 }
 
 static httpd_handle_t start_http_server(void)
@@ -714,8 +800,9 @@ void ap_provisioning_start(void)
     char ssid[33];
     build_ap_ssid(ssid, sizeof(ssid));
 
-    ESP_LOGI(TAG, "Starting %s-Setup AP: SSID=\"%s\" IP=%s",
-             CONFIG_SCADABLE_COMPANY_NAME, ssid, SETUP_AP_IP);
+    // SSID already contains the customer's (or default) prefix —
+    // see build_ap_ssid which reads branding.ssid_prefix from NVS.
+    ESP_LOGI(TAG, "Starting setup AP: SSID=\"%s\" IP=%s", ssid, SETUP_AP_IP);
 
     ESP_ERROR_CHECK(esp_netif_init());
     // esp_event_loop_create_default may already exist if we came from
