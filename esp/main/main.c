@@ -33,6 +33,7 @@
 
 #include "ap_provisioning.h"
 #include "boot_decision.h"
+#include "boot_state.h"
 #include "cloud_check.h"
 
 static const char *TAG = "scadable.provision";
@@ -111,10 +112,16 @@ void app_main(void)
     // forces us into AP mode regardless of saved state.
     check_recovery_button();
 
+    // Initialize boot diagnostics (boot_count++, load last_seen_ssid +
+    // wifi_attempt from NVS) BEFORE decide_mode() so any /state probe
+    // from the captive portal sees a fully-populated struct.
+    boot_state_init();
+
     provisioning_mode_t mode = decide_mode();
 
     switch (mode) {
         case MODE_OTA_PULL:
+            boot_state_set_decision(BOOT_DECISION_OTA_PULL);
             ESP_LOGI(TAG, "Boot decision: OTA pull (chip is provisioned, cloud reachable)");
             cloud_check_run();
             // cloud_check_run() should not return. If it does, the
@@ -125,6 +132,7 @@ void app_main(void)
             // FALLTHROUGH
 
         case MODE_AP:
+            boot_state_set_decision(BOOT_DECISION_AP_MODE);
             ESP_LOGI(TAG, "Boot decision: AP mode (provisioning required)");
             ap_provisioning_start();
             // ap_provisioning_start() either reboots from the HTTP

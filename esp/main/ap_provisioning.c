@@ -53,6 +53,8 @@
 #include "nvs.h"
 #include "sdkconfig.h"
 
+#include "boot_state.h"
+
 static const char *TAG = "scadable.ap";
 
 #define SETUP_AP_IP    "192.168.4.1"
@@ -217,6 +219,30 @@ static const char setup_page_template_html[] =
     "<h1 class=\"heading\">Setup device</h1>"
     "<p class=\"sub\">Pick the WiFi network this gateway should use. "
     "You're connected to <code>%s</code>.</p>"
+
+    // Boot diagnostics banner. Hidden by default; populated and shown
+    // by the JS at the bottom of this page on /state fetch. Inline
+    // styles (rather than the main stylesheet) so this banner is
+    // self-contained — easier to merge with the parallel org-branding
+    // PR that's also reworking the stylesheet.
+    "<div id=\"sb\" style=\"display:none;padding:14px 16px;margin-top:18px;"
+    "border-radius:12px;background:rgba(245,99,0,.10);border:1px solid var(--orange);"
+    "color:var(--cream)\">"
+    "<div style=\"font-weight:600;color:var(--orange);margin-bottom:6px;display:flex;"
+    "align-items:center;gap:8px\">"
+    "<span id=\"sb-icon\" aria-hidden=\"true\">&#9888;</span>"
+    "<span id=\"sb-title\">Heads up</span>"
+    "</div>"
+    "<div id=\"sb-msg\" style=\"font-size:14px;line-height:1.45;color:var(--cream);"
+    "margin-bottom:10px\"></div>"
+    "<div style=\"display:flex;align-items:center;gap:10px;flex-wrap:wrap\">"
+    "<button id=\"sb-copy\" type=\"button\" style=\"font-size:12px;padding:6px 12px;"
+    "background:var(--orange);color:#fff;border:0;border-radius:6px;cursor:pointer;"
+    "min-height:32px\">Copy details</button>"
+    "<span id=\"sb-copied\" style=\"display:none;font-size:12px;color:var(--turq)\">"
+    "Copied!</span>"
+    "</div>"
+    "</div>"
 
     "<div class=\"bar\">"
     "<h2>Networks</h2>"
@@ -408,6 +434,69 @@ static const char setup_page_template_html[] =
     "}"
 
     "scan();pollTimer=setInterval(()=>{if(!ov.classList.contains('show'))scan()},20000);"
+
+    // ---- Boot-diagnostics banner ---------------------------------
+    // Fetches /state every 5s, shows the banner whenever the chip is
+    // in AP mode for a non-trivial reason. The "wifi_creds_missing"
+    // case is the expected first-boot state — no scary banner there.
+    "const sb=$('#sb'),sbT=$('#sb-title'),sbM=$('#sb-msg'),sbI=$('#sb-icon'),"
+    "sbCopy=$('#sb-copy'),sbCopied=$('#sb-copied');"
+    "let lastState=null;"
+    "function fmtCopy(s){"
+    "let lines=['SCADABLE device - boot diagnostics','',"
+    "'Decision: '+s.decision,'Reason: '+s.reason,s.reason_human,'',"
+    "'Boot count: '+s.boot_count,"
+    "'Last SSID: '+(s.last_seen_ssid||'(none)'),"
+    "'WiFi attempt: '+s.wifi_attempt,"
+    "'Uptime: '+s.uptime_secs+'s',"
+    "'Firmware: '+s.firmware_version];"
+    "return lines.join('\\n');"
+    "}"
+    "function copyToClipboard(text){"
+    // Modern path; some captive-portal popovers (notably old iOS) lack
+    // navigator.clipboard, so fall back to a hidden textarea + execCommand.
+    "if(navigator.clipboard&&navigator.clipboard.writeText){"
+    "return navigator.clipboard.writeText(text).catch(()=>fallback(text))"
+    "}return Promise.resolve(fallback(text));"
+    "function fallback(t){"
+    "const ta=document.createElement('textarea');ta.value=t;"
+    "ta.style.position='fixed';ta.style.opacity='0';"
+    "document.body.appendChild(ta);ta.focus();ta.select();"
+    "try{document.execCommand('copy')}catch(e){}"
+    "document.body.removeChild(ta);"
+    "}"
+    "}"
+    "sbCopy.addEventListener('click',async()=>{"
+    "if(!lastState)return;"
+    "await copyToClipboard(fmtCopy(lastState));"
+    "sbCopied.style.display='inline';"
+    "setTimeout(()=>{sbCopied.style.display='none'},2000);"
+    "});"
+    "function applyState(s){"
+    "lastState=s;"
+    "const hide=(s.decision!=='ap_mode')||(s.reason==='wifi_creds_missing')||(s.reason==='none');"
+    "if(hide){sb.style.display='none';return}"
+    "sb.style.display='block';"
+    "const titles={"
+    "nvs_certs_missing:'Chip needs to be re-flashed',"
+    "wifi_auth_failed:'Last WiFi password was wrong',"
+    "wifi_no_ap_found:'Last WiFi network not found',"
+    "wifi_timeout:'Last WiFi connect timed out',"
+    "wifi_connect_failed:'Last WiFi connect failed',"
+    "cloud_unreachable:'WiFi works but SCADABLE cloud is unreachable',"
+    "cloud_unauthorized:'Cloud rejected this device',"
+    "cloud_timeout:'Cloud probe timed out'"
+    "};"
+    "sbT.textContent=titles[s.reason]||'Heads up';"
+    "sbM.textContent=s.reason_human||'';"
+    "}"
+    "async function fetchState(){"
+    "try{const r=await fetch('/state',{cache:'no-store'});"
+    "if(r.ok){const j=await r.json();applyState(j)}"
+    "}catch(e){/* network blip — keep last banner */}"
+    "}"
+    "fetchState();setInterval(fetchState,5000);"
+
     "})();"
     "</script>"
     "</body></html>";
@@ -496,6 +585,30 @@ static esp_err_t handler_scan(httpd_req_t *req)
     return ESP_OK;
 }
 
+// GET /state — boot diagnostics endpoint. Returns the JSON snapshot
+// produced by boot_state.c so the captive portal banner can show the
+// operator WHY the chip is in AP mode (not just "no creds yet").
+//
+// 1 KB stack buffer is enough for the worst-case payload (32-char
+// SSID + the longest reason_human string is ~200 bytes — total well
+// under 600 bytes). Keeping the buffer on the stack avoids a heap
+// allocation on every poll (page polls every 5s).
+static esp_err_t handler_state(httpd_req_t *req)
+{
+    char buf[1024];
+    int n = boot_state_render_json(buf, sizeof(buf));
+    if (n < 0) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "render");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/json");
+    // Captive-portal popups can be aggressive about caching small
+    // JSON responses; force every poll to actually hit the chip.
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_send(req, buf, n);
+    return ESP_OK;
+}
+
 // Reboot helper — runs on a small dedicated task so the HTTP handler
 // can return its 200 to the browser before the radio drops.
 static void reboot_task(void *arg)
@@ -555,6 +668,12 @@ static esp_err_t handler_connect(httpd_req_t *req)
     nvs_commit(handle);
     nvs_close(handle);
     cJSON_Delete(root);
+
+    // Clear any persisted wifi_attempt outcome from a previous boot —
+    // otherwise the next boot's /state would still show "auth_failed"
+    // even though the operator just submitted fresh creds. The next
+    // boot will populate this with the new attempt's actual outcome.
+    boot_state_clear_persisted_wifi_attempt();
 
     ESP_LOGI(TAG, "Saved creds for SSID '%s' (pw len=%d)", ssid, (int)strlen(pass));
 
@@ -696,14 +815,19 @@ static httpd_handle_t start_http_server(void)
         .uri = "/", .method = HTTP_GET, .handler = handler_root};
     static const httpd_uri_t scan_uri = {
         .uri = "/scan", .method = HTTP_GET, .handler = handler_scan};
+    static const httpd_uri_t state_uri = {
+        .uri = "/state", .method = HTTP_GET, .handler = handler_state};
     static const httpd_uri_t connect_uri = {
         .uri = "/connect", .method = HTTP_POST, .handler = handler_connect};
-    // Wildcard catch-all for OS captive-portal probes.
+    // Wildcard catch-all for OS captive-portal probes. MUST register
+    // last — esp_http_server walks handlers in registration order and
+    // the wildcard would otherwise swallow /scan, /state, etc.
     static const httpd_uri_t catchall_uri = {
         .uri = "/*", .method = HTTP_GET, .handler = handler_redirect};
 
     httpd_register_uri_handler(server, &root_uri);
     httpd_register_uri_handler(server, &scan_uri);
+    httpd_register_uri_handler(server, &state_uri);
     httpd_register_uri_handler(server, &connect_uri);
     httpd_register_uri_handler(server, &catchall_uri);
     return server;
