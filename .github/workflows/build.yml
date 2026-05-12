@@ -52,20 +52,23 @@ jobs:
 
       - name: Build with ESP-IDF
         uses: espressif/esp-idf-ci-action@v1
-        env:
+        with:
+          esp_idf_version: v5.3
+          target: ${{ matrix.target }}
+          path: 'esp'
           # Layered defaults: common base + size overlay. ESP-IDF reads
           # these in order, later wins. The size overlay is what flips
           # CONFIG_PARTITION_TABLE_CUSTOM_FILENAME and
           # CONFIG_ESPTOOLPY_FLASHSIZE_<N>MB so the same source tree
           # produces a 4 MiB-safe binary or an 8 MiB binary depending
-          # on the matrix axis. ESP-IDF requires forward slashes here
-          # even on POSIX; the path is relative to the project dir
-          # passed via `path:` below.
-          SDKCONFIG_DEFAULTS: "sdkconfig.defaults;sdkconfig.${{ matrix.flash_size }}"
-        with:
-          esp_idf_version: v5.3
-          target: ${{ matrix.target }}
-          path: 'esp'
+          # on the matrix axis.
+          #
+          # NB: the action's docker invocation does NOT propagate
+          # arbitrary workflow `env:` vars into the container — only
+          # IDF_TARGET makes it through. So SDKCONFIG_DEFAULTS has to
+          # be set inline in the `command:` shell, not the step env.
+          # See https://github.com/espressif/esp-idf-ci-action/blob/main/action.yml
+          command: SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.${{ matrix.flash_size }}" idf.py build
 
       - name: Rename outputs with target+flash-size prefix
         run: |
