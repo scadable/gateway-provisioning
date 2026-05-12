@@ -779,6 +779,78 @@ static esp_err_t handler_redirect(httpd_req_t *req)
     return ESP_OK;
 }
 
+// ─── OS captive-portal probe redirects ─────────────────────────────
+//
+// Bug context (2026-05-12): Macs were dropping our SoftAP within a
+// few seconds of joining. macOS hits Apple's captive-portal probe
+// URLs (e.g. /hotspot-detect.html) on every WiFi join. Our wildcard
+// `/*` handler above DOES redirect, but it sends an empty body —
+// and iOS/macOS treat an empty 302 as "not really a captive portal,
+// move on". The OS then either marks the network as no-portal-needed
+// and auto-dismisses the popup, or worse, drops the WiFi entirely
+// because it can't reach the real internet.
+//
+// The fix is two-pronged:
+//   1. Explicit handlers for the well-known probe URLs that return
+//      a 302 with a small text body. iOS/macOS specifically requires
+//      the response to have content for the captive-portal popup to
+//      stay open — confirmed by the upstream ESP-IDF captive_portal
+//      example ("iOS requires content in the response to detect a
+//      captive portal, simply redirecting is not sufficient").
+//   2. An HTTPD_404_NOT_FOUND error handler that does the same 302+
+//      body for any other URL the OS happens to probe (Microsoft
+//      adds new ones over time; we don't want to chase them).
+//
+// We keep the existing /* wildcard handler in place so this change
+// stays additive (a parallel branch is also editing this file). The
+// explicit probe handlers register first and match before /* would
+// even be considered, so the wildcard is effectively dead code now —
+// removing it is left for a follow-up cleanup.
+//
+// The redirect target is an http:// URL with the literal IP rather
+// than a hostname so the browser doesn't have to make a second DNS
+// round-trip (the sinkhole would answer it anyway, but every extra
+// hop is one more chance for macOS to give up on the captive flow).
+
+// Single shared body for all captive-portal redirects. iOS/macOS
+// just needs *something* non-empty; the user never sees this text
+// because the browser follows the Location header immediately.
+static const char captive_redirect_body[] =
+    "<html><body>Redirecting to setup at "
+    "<a href=\"http://" SETUP_AP_IP "/\">" SETUP_AP_IP "</a></body></html>";
+
+// 302-redirect any request to the captive portal root. Used by both
+// the explicit probe handlers and the 404 error handler.
+static esp_err_t send_captive_redirect(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "http://" SETUP_AP_IP "/");
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, captive_redirect_body, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+// Probe-URL handler — same shape as send_captive_redirect, separate
+// function so we can log specifically when an OS probe hits us
+// (helps confirm the fix is doing what we think during field debug).
+static esp_err_t handler_probe_redirect(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "captive probe %s -> 302 /", req->uri);
+    return send_captive_redirect(req);
+}
+
+// 404 error handler. esp_http_server invokes this when no registered
+// URI matches; we turn it into a 302 to the root so any random URL
+// the client tries (typed in the address bar, fetched by some random
+// background app, future Microsoft probe path) ends up on the setup
+// page.
+static esp_err_t handler_404_redirect(httpd_req_t *req, httpd_err_code_t err)
+{
+    (void)err;
+    ESP_LOGI(TAG, "404 %s -> 302 /", req->uri);
+    return send_captive_redirect(req);
+}
+
 // ─── DNS sinkhole ──────────────────────────────────────────────────
 //
 // A tiny task that binds UDP/53 and replies to every A query with
@@ -889,7 +961,11 @@ static httpd_handle_t start_http_server(void)
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.uri_match_fn = httpd_uri_match_wildcard;
     cfg.lru_purge_enable = true;
-    cfg.max_uri_handlers = 8;
+    // Bumped from 8 to 16 to fit the explicit OS-probe handlers added
+    // for the macOS captive-portal fix (5 original + 7 probe URLs +
+    // wildcard = 13). Each entry is small (a httpd_uri_t pointer slot
+    // in an internal array), so the heap impact is negligible.
+    cfg.max_uri_handlers = 16;
 
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &cfg) != ESP_OK) {
@@ -905,9 +981,46 @@ static httpd_handle_t start_http_server(void)
         .uri = "/state", .method = HTTP_GET, .handler = handler_state};
     static const httpd_uri_t connect_uri = {
         .uri = "/connect", .method = HTTP_POST, .handler = handler_connect};
+
+    // Explicit handlers for the OS captive-portal probe URLs. These
+    // MUST register before the /* wildcard so they match first; in
+    // practice esp_http_server with httpd_uri_match_wildcard walks
+    // in registration order and stops at the first match.
+    //
+    // Apple (iOS, macOS):
+    static const httpd_uri_t apple_hotspot_uri = {
+        .uri = "/hotspot-detect.html",
+        .method = HTTP_GET, .handler = handler_probe_redirect};
+    static const httpd_uri_t apple_success_uri = {
+        .uri = "/library/test/success.html",
+        .method = HTTP_GET, .handler = handler_probe_redirect};
+    // Android (most vendors):
+    static const httpd_uri_t android_generate_uri = {
+        .uri = "/generate_204",
+        .method = HTTP_GET, .handler = handler_probe_redirect};
+    static const httpd_uri_t android_gen_uri = {
+        .uri = "/gen_204",
+        .method = HTTP_GET, .handler = handler_probe_redirect};
+    // Microsoft (Windows 10/11 NCSI):
+    static const httpd_uri_t ms_connecttest_uri = {
+        .uri = "/connecttest.txt",
+        .method = HTTP_GET, .handler = handler_probe_redirect};
+    static const httpd_uri_t ms_redirect_uri = {
+        .uri = "/redirect",
+        .method = HTTP_GET, .handler = handler_probe_redirect};
+    static const httpd_uri_t ms_ncsi_uri = {
+        .uri = "/ncsi.txt",
+        .method = HTTP_GET, .handler = handler_probe_redirect};
+
     // Wildcard catch-all for OS captive-portal probes. MUST register
     // last — esp_http_server walks handlers in registration order and
     // the wildcard would otherwise swallow /scan, /state, etc.
+    //
+    // Note: with the explicit probe URIs above + the 404 err_handler
+    // below, this wildcard is now functionally redundant. Kept in
+    // place to keep this fix additive — a parallel branch is also
+    // editing this file and reformatting handler registration would
+    // create avoidable merge conflicts.
     static const httpd_uri_t catchall_uri = {
         .uri = "/*", .method = HTTP_GET, .handler = handler_redirect};
 
@@ -915,7 +1028,20 @@ static httpd_handle_t start_http_server(void)
     httpd_register_uri_handler(server, &scan_uri);
     httpd_register_uri_handler(server, &state_uri);
     httpd_register_uri_handler(server, &connect_uri);
+    httpd_register_uri_handler(server, &apple_hotspot_uri);
+    httpd_register_uri_handler(server, &apple_success_uri);
+    httpd_register_uri_handler(server, &android_generate_uri);
+    httpd_register_uri_handler(server, &android_gen_uri);
+    httpd_register_uri_handler(server, &ms_connecttest_uri);
+    httpd_register_uri_handler(server, &ms_redirect_uri);
+    httpd_register_uri_handler(server, &ms_ncsi_uri);
     httpd_register_uri_handler(server, &catchall_uri);
+
+    // Defensive 404 handler — covers any URL we didn't think of (new
+    // OS probe paths, random browser preloads, address-bar typos).
+    // Same 302 + body pattern as the explicit probe handlers.
+    httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, handler_404_redirect);
+
     return server;
 }
 
