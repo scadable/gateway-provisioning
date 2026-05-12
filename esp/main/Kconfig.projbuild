@@ -55,4 +55,13 @@ config SCADABLE_RECOVERY_BUTTON_HOLD_SECS
         customer reset a device that moved networks without
         re-flashing.
 
+config SCADABLE_FIRMWARE_VERSION
+    string "Provisioning firmware version (shown in /state JSON)"
+    default "0.1.4"
+    help
+        Reported by the captive portal's GET /state endpoint and
+        copied into the operator's clipboard via the "Copy details"
+        button. Bump this when cutting a release; CI can override
+        via menuconfig or sdkconfig.brand fragments.
+
 endmenu

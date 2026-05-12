@@ -28,6 +28,8 @@
 #include "nvs_flash.h"
 #include "sdkconfig.h"
 
+#include "boot_state.h"
+
 static const char *TAG = "scadable.decision";
 
 // libscadable's NVS namespace — we just check that the cert keys
@@ -48,6 +50,32 @@ static const char *TAG = "scadable.decision";
 #define WIFI_FAIL_BIT      BIT1
 
 static EventGroupHandle_t s_wifi_event_group;
+
+// Captured by the WiFi event handler so try_connect_saved_wifi() can
+// report a structured outcome to boot_state. Default 0 → translates to
+// "other" if we time out without ever seeing a disconnect event.
+static uint8_t s_last_disconnect_reason = 0;
+
+// Translate IDF wifi_err_reason_t into boot_state's coarser bucket.
+// We only enumerate the cases the operator actually needs — anything
+// else lands as BOOT_WIFI_ATTEMPT_OTHER.
+static boot_wifi_attempt_t map_disconnect_reason(uint8_t reason)
+{
+    switch (reason) {
+        case WIFI_REASON_NO_AP_FOUND:
+            return BOOT_WIFI_ATTEMPT_NO_AP_FOUND;
+        case WIFI_REASON_AUTH_FAIL:
+        case WIFI_REASON_HANDSHAKE_TIMEOUT:
+        case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+        case WIFI_REASON_MIC_FAILURE:
+            return BOOT_WIFI_ATTEMPT_AUTH_FAILED;
+        case WIFI_REASON_BEACON_TIMEOUT:
+        case WIFI_REASON_ASSOC_EXPIRE:
+            return BOOT_WIFI_ATTEMPT_TIMEOUT;
+        default:
+            return BOOT_WIFI_ATTEMPT_OTHER;
+    }
+}
 
 void boot_decision_wipe_wifi_creds(void)
 {
@@ -126,7 +154,14 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         // No retries — boot_decision is a single attempt by design.
-        // If it fails the customer needs to (re-)provision.
+        // If it fails the customer needs to (re-)provision. Capture
+        // the reason code so try_connect_saved_wifi() can report a
+        // structured outcome to boot_state.
+        if (event_data) {
+            wifi_event_sta_disconnected_t *e = (wifi_event_sta_disconnected_t *)event_data;
+            s_last_disconnect_reason = e->reason;
+            ESP_LOGW(TAG, "WiFi disconnected (reason=%u)", e->reason);
+        }
         xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
@@ -140,6 +175,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 static bool try_connect_saved_wifi(const char *ssid, const char *password)
 {
     s_wifi_event_group = xEventGroupCreate();
+    s_last_disconnect_reason = 0;
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -176,10 +212,30 @@ static bool try_connect_saved_wifi(const char *ssid, const char *password)
     bool success = (bits & WIFI_CONNECTED_BIT) != 0;
     if (success) {
         ESP_LOGI(TAG, "WiFi connected");
+        // Persist success + the SSID so the next boot's /state can
+        // show the operator which network we're on (and so AP-mode
+        // boots on a network outage say "last seen MyHomeWiFi" rather
+        // than "no SSID known").
+        boot_state_record_wifi_attempt(BOOT_WIFI_ATTEMPT_SUCCESS, ssid);
         return true;
     }
 
-    ESP_LOGW(TAG, "WiFi connect failed (bits=0x%x) — tearing down for AP mode", (int)bits);
+    // Failure: classify the disconnect reason and persist it. The next
+    // boot's captive portal will surface this so the operator knows
+    // what went wrong on their last attempt.
+    boot_wifi_attempt_t outcome;
+    if (bits == 0) {
+        // Timed out without ever getting WIFI_FAIL_BIT — driver never
+        // produced a disconnect event. Treat as timeout.
+        outcome = BOOT_WIFI_ATTEMPT_TIMEOUT;
+    } else {
+        outcome = map_disconnect_reason(s_last_disconnect_reason);
+    }
+    boot_state_record_wifi_attempt(outcome, NULL);
+
+    ESP_LOGW(TAG, "WiFi connect failed (bits=0x%x reason=%u → %s) — tearing down for AP mode",
+             (int)bits, s_last_disconnect_reason,
+             boot_state_wifi_attempt_to_string(outcome));
     esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, got_ip_h);
     esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, any_id_h);
     esp_wifi_stop();
@@ -232,6 +288,7 @@ provisioning_mode_t decide_mode(void)
     char password[65] = {0};
     if (!read_wifi_creds(ssid, sizeof(ssid), password, sizeof(password))) {
         ESP_LOGI(TAG, "Decision: no saved WiFi creds → AP mode");
+        boot_state_set_reason(BOOT_REASON_WIFI_CREDS_MISSING);
         return MODE_AP;
     }
 
@@ -249,12 +306,39 @@ provisioning_mode_t decide_mode(void)
                  "Decision: NVS namespace `scadable_certs` missing — chip needs "
                  "to be flashed via the SCADABLE dashboard. Falling back to AP "
                  "mode so you can see this message in the captive portal.");
+        boot_state_set_reason(BOOT_REASON_NVS_CERTS_MISSING);
         return MODE_AP;
     }
 
     // ---- Step 3: can we actually connect? ----
     if (!try_connect_saved_wifi(ssid, password)) {
         ESP_LOGI(TAG, "Decision: saved WiFi unreachable → AP mode");
+        // Translate the persisted wifi attempt outcome into the
+        // matching reason enum so the captive portal banner shows the
+        // specific failure (auth_failed vs no_ap_found vs timeout)
+        // instead of a generic "couldn't connect".
+        switch (s_last_disconnect_reason) {
+            case WIFI_REASON_NO_AP_FOUND:
+                boot_state_set_reason(BOOT_REASON_WIFI_NO_AP_FOUND);
+                break;
+            case WIFI_REASON_AUTH_FAIL:
+            case WIFI_REASON_HANDSHAKE_TIMEOUT:
+            case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+            case WIFI_REASON_MIC_FAILURE:
+                boot_state_set_reason(BOOT_REASON_WIFI_AUTH_FAILED);
+                break;
+            case WIFI_REASON_BEACON_TIMEOUT:
+            case WIFI_REASON_ASSOC_EXPIRE:
+                boot_state_set_reason(BOOT_REASON_WIFI_TIMEOUT);
+                break;
+            case 0:
+                // No disconnect event at all → timeout waiting for IP.
+                boot_state_set_reason(BOOT_REASON_WIFI_TIMEOUT);
+                break;
+            default:
+                boot_state_set_reason(BOOT_REASON_WIFI_CONNECT_FAILED);
+                break;
+        }
         return MODE_AP;
     }
 
@@ -262,6 +346,7 @@ provisioning_mode_t decide_mode(void)
     if (!ping_cloud_health()) {
         ESP_LOGI(TAG, "Decision: WiFi up but cloud unreachable → AP mode "
                       "(maybe captive-portal'd network or DNS broken)");
+        boot_state_set_reason(BOOT_REASON_CLOUD_UNREACHABLE);
         // Tear down WiFi so ap_provisioning_start can re-init.
         esp_wifi_stop();
         esp_wifi_deinit();
@@ -269,5 +354,6 @@ provisioning_mode_t decide_mode(void)
     }
 
     ESP_LOGI(TAG, "Decision: all checks passed → OTA pull mode");
+    boot_state_set_reason(BOOT_REASON_NONE);
     return MODE_OTA_PULL;
 }

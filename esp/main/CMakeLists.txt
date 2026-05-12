@@ -5,6 +5,7 @@ idf_component_register(
     SRCS
         "main.c"
         "boot_decision.c"
+        "boot_state.c"
         "ap_provisioning.c"
         "cloud_check.c"
     INCLUDE_DIRS
