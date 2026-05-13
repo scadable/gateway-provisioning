@@ -57,7 +57,7 @@ config SCADABLE_RECOVERY_BUTTON_HOLD_SECS
 
 config SCADABLE_FIRMWARE_VERSION
     string "Provisioning firmware version (shown in /state JSON)"
-    default "0.1.4"
+    default "0.1.9"
     help
         Reported by the captive portal's GET /state endpoint and
         copied into the operator's clipboard via the "Copy details"

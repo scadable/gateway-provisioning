@@ -36,6 +36,18 @@ CONFIG_HTTPD_MAX_URI_LEN=512
 CONFIG_ESP_HTTP_CLIENT_ENABLE_HTTPS=y
 CONFIG_ESP_TLS_USING_MBEDTLS=y
 
+# ---------- mbedTLS CA bundle ----------
+# Compile the Mozilla root-CA bundle into the firmware so the cloud-health
+# HTTPS probe in boot_decision.c can validate edge.scadable.com (and any
+# white-label /health URL backed by a public CA). Without this,
+# esp_tls_cfg_t has no validation source and esp-tls refuses to init the
+# session — the probe fails before sending a packet, chip thinks cloud is
+# unreachable, falls back to AP mode every boot. _DEFAULT_FULL is ~50 KiB
+# of flash; our 4 MiB partition has the headroom and we'd rather not have
+# to debug "works for Let's Encrypt, breaks for GoDaddy" later.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+
 # ---------- mDNS ----------
 # Lets a customer hit `http://scadable-setup.local/` from a browser
 # instead of remembering 192.168.4.1 if their OS captive-portal popup

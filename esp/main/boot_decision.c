@@ -16,6 +16,7 @@
 
 #include <string.h>
 
+#include "esp_crt_bundle.h"
 #include "esp_event.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -285,7 +286,7 @@ static bool ping_cloud_health(void)
     esp_http_client_config_t http_cfg = {
         .url = CONFIG_SCADABLE_OTA_HEALTH_URL,
         .timeout_ms = 5000,
-        .crt_bundle_attach = NULL,  // use system bundle if available
+        .crt_bundle_attach = esp_crt_bundle_attach,  // Mozilla CA bundle (compiled in via CONFIG_MBEDTLS_CERTIFICATE_BUNDLE)
         .skip_cert_common_name_check = false,
         .transport_type = HTTP_TRANSPORT_OVER_SSL,
     };
